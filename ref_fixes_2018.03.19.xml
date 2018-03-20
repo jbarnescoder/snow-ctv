@@ -1,0 +1,985 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<unload unload_date="2018-03-20 01:51:47">
+<sp_widget action="INSERT_OR_UPDATE">
+<category>custom</category>
+<client_script><![CDATA[function($scope, $rootScope, $sce, glideFormFactory) {
+	/* widget controller */
+	var c = this;
+	c.tables = [];
+	c.scripts = '';
+	c.maxTable = 0;
+	c.isReadOnly = false;
+	c.checkMandatory = true;
+	c.SCVarTbl = null;
+	c.isLoading = false;
+	c.changingFields = {
+	};
+	
+	// TODO:
+	// Fix onChange scripts because they don't work properly with g_form.setValue() (digest cycle issue)
+	
+	c.addTable = function(idx) {
+		c.tables.push({
+			idx: idx || c.tables.length + 1,
+			maxRows: 0,
+			rows: [],
+			nonTableFields: {
+			},
+			status: {
+				message: "",
+				state: "info",
+			}
+		});
+		c.maxTable++;
+		for (var i=0; i<c.data.nonTableFields.length; i++) {
+			if (c.data.nonTableFields[i].type == 'button') {
+				continue;
+			}
+			var fld = angular.copy(c.data.nonTableFields[i]);
+			if (c.isReadOnly) {
+				fld.sys_readonly = true;
+				fld.readonly = true;
+				fld.read_only = true;
+			}
+			var name = fld.variable_name + "." + c.tables[c.tables.length-1].idx;
+			c.tables[c.tables.length-1].nonTableFields[fld.name] = fld;
+			c.tables[c.tables.length-1].nonTableFields[fld.name].variable_name = name;
+			c.tables[c.tables.length-1].nonTableFields[fld.name].ed.name = name;
+			c.tables[c.tables.length-1].nonTableFields[fld.name].id = name;
+			fld.name = fld.name + "_" + c.tables[c.tables.length-1].idx;
+			$scope.formModel._fields[fld.name] = fld;
+		}
+		var fields = [];
+		for (var f in $scope.formModel._fields) {
+			fields.push($scope.formModel._fields[f]);
+		}
+		c.addRow(c.tables.length-1);
+	};
+	
+	c.setCheckMandatory = function(check) {
+		c.checkMandatory = check;
+	};
+	
+	c.clearTable = function(tbl) {
+		if (confirm("Are you sure you want to clear all data from this table?")) {
+			var rws = tbl.rows.length;
+			for (var r=0; r<rws; r++) {
+				c.removeRow(tbl, tbl.rows[0]);
+			}
+			if (tbl.rows.length == 0) {
+				c.addRow(tbl);
+			}
+		}
+	};
+	
+	c.removeTable = function(idx) {
+		if (!c.tables[idx]) {
+			return;
+		}
+		if (c.tables.length == 1) {
+			return;
+		}
+		c.tables.splice(idx, 1);
+	};
+	
+	c.addRow = function(tbl, idx) {
+		if (c.tables[tbl].rows.length >= c.data.maxRows) {
+			return null;
+		}
+		var row = {
+			idx: idx || c.tables[tbl].maxRows + 1,
+			fields: {
+			}
+		};
+		for (var i=0; i<c.data.fields.length; i++) {
+			if (c.data.fields[i].type == 'button') {
+				continue;
+			}
+			var fld = angular.copy(c.data.fields[i]);
+			if (c.isReadOnly) {
+				fld.sys_readonly = true;
+				fld.readonly = true;
+				fld.read_only = true;
+			}
+			var name = fld.variable_name + "." + c.tables[tbl].idx + "." + row.idx;
+			row.fields[fld.name] = fld;
+			row.fields[fld.name].variable_name = name;
+			row.fields[fld.name].ed.name = name;
+			row.fields[fld.name].id = name;
+			fld.name = fld.name + "_" + c.tables[tbl].idx + "_" + row.idx;
+			$scope.formModel._fields[fld.name] = fld;
+		}
+		var fields = [];
+		for (var f in $scope.formModel._fields) {
+			fields.push($scope.formModel._fields[f]);
+		}
+		var opts = {
+		};
+		if ($scope.g_form) {
+			opts = {
+				itemSysId: $scope.g_form.$private.options('itemSysId'),
+				getFieldSequence: $scope.g_form.$private.options('getFieldSequence'),
+				getFieldParams: $scope.g_form.$private.options('getFieldParams'),
+				isInitialized: $scope.g_form.$private.options('isInitialized'),
+				getMappedField: $scope.g_form.$private.options('getMappedField')
+			};
+		}
+		$scope.g_form = glideFormFactory.create($scope, null, $scope.formModel.sys_id, fields, null);
+		c.SCVarTbl.setGlideForm($scope.g_form);
+		c.SCVarTbl.setScope($scope);
+		$scope.g_form.$private.options(opts);
+		$scope.g_form.$private.events.on("change", function(fieldName, oldValue, newValue) {
+			var selFld, fld, fldName;
+			for (fld in $scope.formModel._fields) {
+				if ($scope.formModel._fields[fld].name == fieldName) {
+					selFld = $scope.formModel._fields[fld];
+					$scope.formModel._fields[fld].stagedValue = newValue;
+				}
+			}
+			if (selFld && oldValue != newValue && !c.isReadOnly) {
+				var fn;
+				for (fld=0; fld<c.data.fields.length; fld++) {
+					if (c.data.fields[fld].var_name == selFld.var_name &&
+						typeof c.data.fields[fld].onChange == 'function') {
+						if (!c.isFieldChanging(fieldName)) {
+							fn = c.data.fields[fld].onChange;
+						}
+						break;
+					}
+				}
+				if (!fn) {
+					for (fld=0; fld<c.data.nonTableFields.length; fld++) {
+						if (c.data.nonTableFields[fld].var_name == selFld.var_name &&
+							typeof c.data.nonTableFields[fld].onChange == 'function') {
+							if (!c.isFieldChanging(fieldName)) {
+								fn = c.data.nonTableFields[fld].onChange;
+							}
+							break;
+						}
+					}
+				}
+				if (fn) {
+					c.setFieldChanging(fieldName, true);
+					$scope.$evalAsync(function() {
+						try {
+							fn(selFld, $scope.g_form, c.SCVarTbl, oldValue, newValue, true);
+						} catch (ex) {
+							console.warn("Error calling onchange script: " + ex.message);
+						}
+						c.setFieldChanging(fieldName, false);
+					});
+				}
+			}
+		});
+		c.tables[tbl].rows.push(row);
+		if (typeof $scope.onAddRow == 'function') {
+			$scope.onAddRow(c.tables[tbl].idx, c.tables[tbl].idx + "." + c.tables[tbl].rows[c.tables[tbl].rows.length-1].idx, c.isLoading, $scope.g_form, c.SCVarTbl, true);
+		}
+		c.checkRows(tbl);
+		c.tables[tbl].maxRows++;
+		return row;
+	};
+	
+	c.setFieldChanging = function(id, changing) {
+		id = id.replace(/\./g, "_");
+		c.changingFields[id] = changing;
+	},
+	
+	c.isFieldChanging = function(id) {
+		id = id.replace(/\./g, "_");
+		return c.changingFields[id];
+	},
+		
+	c.click = function(fld, rowID) {
+		var found = false, f, selFld;
+		for (f=0; f<c.data.fields.length; f++) {
+			if (c.data.fields[f].var_name == fld.var_name && typeof c.data.fields[f].onClick == 'function') {
+				found = true;
+				selFld = angular.copy(fld);
+				selFld.id = selFld.var_name + "." + rowID;
+				c.data.fields[f].onClick(selFld, $scope.g_form, c.SCVarTbl, true);
+				break;
+			}
+		}
+		if (!found) {
+			for (f=0; f<c.data.nonTableFields.length; f++) {
+				if (c.data.nonTableFields[f].var_name == fld.var_name && typeof c.data.nonTableFields[f].onClick == 'function') {
+					selFld = angular.copy(fld);
+					selFld.id = selFld.var_name + "." + rowID;
+					c.data.nonTableFields[f].onClick(selFld, $scope.g_form, c.SCVarTbl, true);
+					break;
+				}
+			}
+		}
+	};
+	
+	c.checkRows = function(tbl) {
+		if (c.tables[tbl].rows.length >= c.data.maxRows) {
+			c.tables[tbl].status.state = "warning";
+			c.tables[tbl].status.message = "You have reached the maximum number of rows allowed (" + c.data.maxRows + ")";
+		} else {
+			c.tables[tbl].status.state = "info";
+			c.tables[tbl].status.message = "";
+		}
+	};
+	
+	c.removeRow = function(tbl, row) {
+		var ridx = -1, tidx = -1;
+		if (tbl) {
+			for (var r=0; r<tbl.rows.length; r++) {
+				if (tbl.rows[r].idx == row.idx) {
+					ridx = r;
+					break;
+				}
+			}
+		}
+		if (ridx >= 0) {
+			tbl.rows.splice(ridx, 1);
+		}
+		for (var t=0; t<c.tables.length; t++) {
+			if (c.tables[t].idx == tbl.idx) {
+				tidx = t;
+				break;
+			}
+		}
+		if (typeof $scope.onDeleteRow == 'function') {
+			$scope.onDeleteRow(tbl.idx, $scope.g_form, c.SCVarTbl, true);
+		}
+		if (tidx >= 0) {
+			if (tbl.rows.length == 0) {
+				c.addRow(tidx);
+			}
+			c.checkRows(tidx);
+		}
+	};
+	
+	c.copyRow = function(tbl, row) {
+		var tidx = -1;
+		for (var t=0; t<c.tables.length; t++) {
+			if (c.tables[t].idx == tbl.idx) {
+				tidx = t;
+				break;
+			}
+		}
+		if (tidx >= 0) {
+			var rw = c.addRow(tidx);
+			if (rw) {
+				for (var fld in rw.fields) {
+					if (row.fields[fld]) {
+						rw.fields[fld].value = row.fields[fld].value;
+						rw.fields[fld].display_value = row.fields[fld].display_value;
+						rw.fields[fld].stagedValue = row.fields[fld].stagedValue;
+						rw.fields[fld].displayValue = row.fields[fld].displayValue;
+					}
+				}
+			}
+		}
+	};
+	
+	// gets the JSON string from the variable and fills in all fields
+	c.getResult = function() {
+		if (c.savedData) {
+			var fld, f;
+			for (var t=0; t<c.savedData.length; t++) {
+				if (!c.tables[t]) {
+					c.addTable();
+				}
+				for (f=0; f<c.savedData[t].preFields.length; f++) {
+					for (fld in c.tables[t].nonTableFields) {
+						if (c.savedData[t].preFields[f].field == c.tables[t].nonTableFields[fld].var_name) {
+							c.tables[t].nonTableFields[fld].value = c.savedData[t].preFields[f].value;
+							c.tables[t].nonTableFields[fld].displayValue = c.savedData[t].preFields[f].display;
+							c.tables[t].nonTableFields[fld].display_value = c.savedData[t].preFields[f].display;
+						}
+					}
+				}
+				for (var r=0; r<c.savedData[t].rows.length; r++) {
+					if (!c.tables[t].rows[r]) {
+						c.addRow(t, (r+1));
+					}
+					for (f=0; f<c.savedData[t].rows[r].length; f++) {
+						for (fld in c.tables[t].rows[r].fields) {
+							if (c.savedData[t].rows[r][f].field == c.tables[t].rows[r].fields[fld].var_name) {
+								c.tables[t].rows[r].fields[fld].value = c.savedData[t].rows[r][f].value;
+								c.tables[t].rows[r].fields[fld].displayValue = c.savedData[t].rows[r][f].display;
+								c.tables[t].rows[r].fields[fld].display_value = c.savedData[t].rows[r][f].display;
+							}
+						}
+					}
+				}
+			}
+		}
+	};
+	
+	// gets the values of all elements and sets the values accordingly
+	c.setResult = function() {
+		if (!c.isReadOnly) {
+			var res = c.buildResult(true);
+			if (!res.passMandatory) {
+				return false;
+			}
+			$scope.g_form.setValue("IO:"+c.data.resultVar, JSON.stringify(res.result));
+		}
+		return true;
+	};
+	
+	c.buildResult = function(checkMandatory) {
+		var ret = {
+			passMandatory: true,
+			result: []
+		};
+		for (var t=0; t<c.tables.length; t++) {
+			var hasErrors = false;
+			var md = [];
+			var tbl = {
+				hdr: '',
+				forElement: '',
+				preFields: [],
+				rows: []
+			};
+			var flds, f;
+			for (f=0; f<c.data.nonTableFields.length; f++) {
+				flds = [];
+				if (c.data.nonTableFields[f].location != 'before' || !c.data.nonTableFields[f].repeat) {
+					continue;
+				}
+				if (c.data.nonTableFields[f].type == 'button') {
+					continue;
+				}
+				if (c.checkMandatory && c.data.nonTableFields[f].mandatory &&
+					c.tables[t].nonTableFields[c.data.nonTableFields[f].catalogFieldName] &&
+					c.tables[t].nonTableFields[c.data.nonTableFields[f].catalogFieldName].value == '') {
+					md.push(c.data.nonTableFields[f].label);
+					ret.passMandatory = false;
+					hasErrors = true;
+				}
+					tbl.preFields.push(c.buildFieldObject(c.tables[t].nonTableFields[c.data.nonTableFields[f].catalogFieldName], c.data.nonTableFields[f]));
+			}
+			for (var r=0; r<c.tables[t].rows.length; r++) {
+				var rw = "Row " + (r+1);
+				flds = [];
+				for (f=0; f<c.data.fields.length; f++) {
+					if (c.data.fields[f].type == 'button') {
+						continue;
+					}
+					if (c.checkMandatory && c.data.fields[f].mandatory &&
+						c.tables[t].rows[r].fields[c.data.fields[f].catalogFieldName] &&
+					c.tables[t].rows[r].fields[c.data.fields[f].catalogFieldName].value == '') {
+						md.push(rw + " / " + c.data.fields[f].label);
+						ret.passMandatory = false;
+						hasErrors = true;
+					}
+					flds.push(c.buildFieldObject(c.tables[t].rows[r].fields[c.data.fields[f].catalogFieldName], c.data.fields[f]));
+				}
+				tbl.rows.push(flds);
+			}
+			if (checkMandatory && hasErrors) {
+				c.tables[t].status.state = "danger";
+				c.tables[t].status.message = "Please fill in the following mandatory fields: " + md.join(", ");
+			} else {
+				c.tables[t].status.state = "info";
+				c.tables[t].status.message = "";
+			}
+			ret.result.push(tbl);
+		}
+		return ret;
+	};
+	
+	c.buildFieldObject = function(fld, def, tbl) {
+		var obj = {
+		};
+		obj.field = def.var_name;
+		obj.label = def.label;
+		obj.mandatory = def.mandatory;
+		obj.type = def.origType;
+		obj.giveFocus = def.giveFocus;
+		obj.reference = def.reference;
+		obj.choiceOptions = def.choiceOptions;
+		obj.refQual = def.refQual;
+		obj.onChangeFunc = def.onChangeFunc;
+		obj.cellCSS = def.cellCSS;
+		obj.labelCSS = def.labelCSS;
+		obj.show = def.show;
+		obj.imageSrc = def.imageSrc;
+		obj.value = fld.value;
+		obj.display = fld.displayValue;
+		obj.relatedTable = '';
+		obj.disabled = false;
+		return obj;
+	};
+	
+	$scope.g_form = null;
+	$scope.formModel = null;
+	
+	$scope.getGlideForm = function() {
+		return $scope.g_form;
+	};
+	
+	c.initialize = function() {
+		c.isLoading = true;
+		// setup the event triggers
+		try {
+			if (c.data.onAddRow) {
+				$scope.onAddRow = new Function('tableID', 'rowID', 'onLoad', 'g_form', 'SCVarTbl', 'isSP', c.data.onAddRow);
+			}
+			if (c.data.onDeleteRow) {
+				$scope.onDeleteRow = new Function('tableID', 'g_form', 'SCVarTbl', 'isSP',  c.data.onDeleteRow);
+			}
+			for (var i=0; i<c.data.fields.length; i++) {
+				if (c.data.fields[i].onChangeScript) {
+					c.data.fields[i].onChange = new Function('ctl', 'g_form', 'SCVarTbl', 'oldValue', 'newValue', 'isSP', c.data.fields[i].onChangeScript);
+				}
+				if (c.data.fields[i].onClickScript) {
+					c.data.fields[i].onClick = new Function('ctl', 'g_form', 'SCVarTbl', 'isSP',  c.data.fields[i].onClickScript);
+				}
+			}
+			for (var i=0; i<c.data.nonTableFields.length; i++) {
+				if (c.data.nonTableFields[i].onChangeScript) {
+					c.data.nonTableFields[i].onChange = new Function('ctl', 'g_form', 'SCVarTbl', 'oldValue', 'newValue', 'isSP', c.data.nonTableFields[i].onChangeScript);
+				}
+				if (c.data.nonTableFields[i].onClickScript) {
+					c.data.nonTableFields[i].onClick = new Function('ctl', 'g_form', 'SCVarTbl', 'isSP',  c.data.nonTableFields[i].onClickScript);
+				}
+			}
+		} catch(ex) {
+			console.warn(ex);
+		}
+		
+		// get the form model, g_form from a parent scope
+		try {
+			var t = 0;
+			var par = $scope.$parent;
+			var foundAll = false;
+			// navigate max 20 parents up to find some data that we need.
+			// if we find it sooner, we will exit the loop.
+			while (par && t < 20) {
+				if (!$scope.formModel && par.formModel) {
+					$scope.formModel = par.formModel;
+				}
+				if (!$scope.g_form && par.page && par.page.g_form) {
+					$scope.g_form = par.page.g_form;
+				}
+				if (typeof par.triggerUIAction != 'undefined' && typeof par.data.f != 'undefined') {
+					c.isReadOnly = c.data.disableAfterOrder && par.data.f.table != 'sc_cat_item';
+					if ($scope.g_form && $scope.formModel) {
+						break;
+					}
+				}
+				par = par.$parent;
+			}
+		} catch(ex) {
+			console.warn(ex);
+		}
+		
+		try {
+			if ($scope.g_form) {
+				$scope.g_form.$private.events.on('submit', c.setResult);
+				$scope.g_form.setVisible("IO:"+c.data.resultVar, false);
+				c.SCVarTbl = new SPSCVarTblUtil($scope, $scope.g_form);
+				var dt = $scope.g_form.getValue("IO:" + c.data.resultVar);
+				c.savedData = null;
+				if (dt != '') {
+					c.savedData = JSON.parse(dt);
+					c.getResult();
+				}
+			}
+		} catch(ex) {
+			console.warn(ex);
+		}
+		
+		if (c.tables.length == 0) {
+			c.addTable();
+		}
+		c.isLoading = false;
+	};
+	
+	c.initialize();
+}]]></client_script>
+<controller_as>c</controller_as>
+<css>/*div.sc-cat-var input.form-control, div.sc-cat-var select.form-control {
+	min-width:100px;
+}*/
+		
+div.sc-cat-var {
+	padding-top: 10px;
+}
+		
+div.sc-cat-var:nth-of-type(1) {
+	padding-top: 0px;
+}
+		
+.sc-var-table th {
+	font-size: 1em; 
+	white-space: nowrap;
+}
+
+.sc-var-table th:last-of-type {
+	font-size: 1em;
+}
+
+.sc-var-table {
+  margin-bottom: 0px;
+}
+
+.sc-var-table td label.field-label {
+  display: none;
+}
+
+.sc-var-table td span.type-boolean label &gt; span {
+  display: none;
+}
+
+.sc-var-table .form-group {
+ margin-bottom: 0px; 
+}
+
+.sc-cat-var &gt; .well {
+  padding: 5px; 
+  margin-bottom: 0px;
+  border-bottom-left-radius: 0px;
+  border-bottom-right-radius: 0px;
+  border-bottom-width: 0px;
+}
+
+.sc-cat-var .field-has-reference {
+  display: block;
+  table-layout: inherit;
+}
+
+.panel-heading h4 {
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+.alert {
+  margin-top: 5px !important;
+  margin-bottom: 5px !important;
+  margin-left: 0px !important;
+  margin-right: 0px !important;
+}
+
+.item_action {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.fa-copy {
+  font-size: .8em;
+}
+
+.action-button {
+  text-align: right; 
+  white-space: nowrap; 
+  width: 15px;
+}
+
+.action-button-left .action-button:first-of-type, 
+.action-button-right .action-button:last-of-type {
+  display: table-cell;
+}
+
+.action-button-right .action-button:first-of-type, 
+.action-button-left .action-button:last-of-type {
+  display: none;
+}
+
+.sc-cat-read-only .action-button {
+  display: none !important;
+}
+
+.sc-cat-prefields {
+  border-top-width: 0px;
+  border-bottom-width: 0px;
+  margin-top: 0px;
+  margin-bottom: 0px;
+  border-radius: 0px;
+}
+		
+.sc-cat-prefields .panel-body {
+  padding: 5px;
+}
+/* this section of CSS makes the tables stack vertically like a regular form on small screens */
+@media screen and (max-width: 468px) {
+  .sc-var-table &gt; tbody &gt; tr:nth-of-type(odd) {
+    background-color: #f9f9f9;
+  }
+  
+  .sc-cat-var .table-responsive {
+    margin-bottom: 0px !important;
+  }
+  
+  .sc-var-table tr, .sc-var-table td {
+    display: block;
+    border-width: 0px;
+  }
+  
+  .sc-var-table th {
+    display: none;
+  }
+  
+  .action-button:first-of-type {
+    display: block !important;
+    border-width: 0px;
+    width: 100%;
+  }
+  
+  .action-button:last-of-type,
+  .sc-cat-read-only .action-button {
+    display: none !important;
+  }
+  
+  .sc-var-table td label.field-label {
+  	display: initial !important;
+  }
+
+  .sc-var-table td span.type-boolean label &gt; span {
+    display: initial !important;
+  }
+  
+  .btn-field {
+    display: block;
+    width: 100%;
+  }
+}</css>
+<data_table>sp_instance</data_table>
+<demo_data/>
+<description>This will render a table from catalog table variable</description>
+<docs display_value=""/>
+<field_list/>
+<has_preview>false</has_preview>
+<id>catalog-table-variable</id>
+<internal>false</internal>
+<link/>
+<name>Catalog Table Variable</name>
+<option_schema/>
+<public>false</public>
+<roles/>
+<script><![CDATA[(function() {
+	/* populate the 'data' object */
+	/* e.g., data.table = $sp.getValue('table'); */
+	var tableVarGR = new GlideRecord('u_catalog_table_variable');
+	data.fields = [];
+	data.nonTableFields = [];
+	if (tableVarGR.get(options.var_id)) {
+		data.title = tableVarGR.getValue('u_title');
+		data.initialTableHeader = tableVarGR.getValue('u_initial_table_header');
+		data.var_id = tableVarGR.getUniqueValue();
+		data.allowMulti = tableVarGR.getValue('u_allow_multiple_occurrences') == "1" ? true : false;
+		data.buttonPosition = tableVarGR.u_button_position.nil() ? "right" : tableVarGR.getValue('u_button_position');
+		data.focusNew = tableVarGR.getValue('u_focus_new_row') == "1" ? true : false;
+		data.maxRows = tableVarGR.u_max_rows.nil() ? 1000 : parseInt(tableVarGR.getValue('u_max_rows'));
+		data.allowCopy = tableVarGR.getValue('u_allow_copy') == "1" ? true : false;
+		data.resultVar = tableVarGR.getValue('u_result_variable');
+		data.disableAfterOrder = tableVarGR.getValue("u_disable_after_ordered") == "1" ? true : false;
+		if (!tableVarGR.u_when_row_deleted.nil()) {
+			data.onDeleteFunc = data.var_id + '_onDelete';
+			data.onDeleteRow = tableVarGR.getValue('u_when_row_deleted');
+		}
+		if (!tableVarGR.u_when_row_added.nil()) {
+			data.onAddFunc = data.var_id + '_onAdd';
+			data.onAddRow = tableVarGR.getValue('u_when_row_added');
+		}
+		// Get all table columns
+		var tableColumnList = [];
+		var nonTableFieldList = [];
+		var tableColumnGR = new GlideRecord('u_catalog_table_field');
+		tableColumnGR.addQuery('u_catalog_table_variable', tableVarGR.sys_id);
+		tableColumnGR.orderBy('u_order');
+		tableColumnGR.query();
+		while (tableColumnGR.next()) {
+			data.fields.push(setupField(tableColumnGR));
+		}
+		var nonColumnGR = new GlideRecord('u_catalog_table_single_column');
+		nonColumnGR.addQuery('u_catalog_table_variable', tableVarGR.sys_id);
+		nonColumnGR.orderBy('u_order');
+		nonColumnGR.query();
+		while (nonColumnGR.next()) {
+			data.nonTableFields.push(setupField(nonColumnGR));
+		}
+	}
+	
+	function setupField(colGR) {
+		var field = {
+			displayValue: '',
+			display_value: '',
+			value: '',
+			sys_id: colGR.getUniqueValue(),
+			attributes: {
+			},
+			choice: 0,
+			lookup_label: "",
+			lookup_value: "",
+			readonly: false,
+			read_only: false,
+			sys_readonly: false,
+			_cat_variable: true,
+			visible: true,
+			ed: {
+			}
+		};
+		field.name = "IO:" + field.sys_id;
+		field.catalogFieldName = field.name;
+		field.type = 'string';
+		field.origType = colGR.getValue('u_type');
+		if (!colGR.u_type.nil()) {
+			field.type = colGR.getValue('u_type');
+		}
+		if (field.type == 'number' || field.type == 'text') {
+			field.type = 'string';
+		} else if (field.type == 'datetime') {
+			field.type = 'glide_date_time';
+		} else if (field.type == 'date') {
+			field.type = 'glide_date';
+		} else if (field.type == 'checkbox') {
+			field.type = 'boolean';
+		} else if (field.type == 'choice') {
+			field.choice = 1;
+		}
+		if (!colGR.u_max_chars.nil()) {
+			field.max_length = parseInt(colGR.getValue('u_max_chars'));
+		}
+		field.variable_name = colGR.getValue('u_id');
+		field.var_name = field.variable_name;
+		field.label = colGR.getValue('u_label');
+		field.cellCSS = colGR.getValue('u_cell_css');
+		field.labelCSS = colGR.getValue('u_label_css');
+		field.show = 'always';
+		if (!colGR.u_show.nil()) {
+			field.show = colGR.getValue('u_show');
+		}
+		field.mandatory = colGR.getValue('u_mandatory') == "1" ? true : false;
+		if (!field.mandatory) {
+			// we can only make a field read only
+			// if it isn't mandatory
+			field.readonly = colGR.getValue('u_read_only') == "1" ? true : false;
+			field.read_only = field.readonly;
+			field.sys_readonly = field.readonly;
+		}
+		field.giveFocus = colGR.getValue('u_give_focus') == "1" ? true : false;
+		field.reference = colGR.getValue('u_referenced_table') || '';
+		field.refTable = field.reference;
+		field.stagedValue = "";
+		field.refQual = colGR.getValue('u_reference_qualifier') || '';
+		field.reference_qual = field.refQual;
+		field.location = 'table';
+		if (colGR.isValidField('u_location')) {
+			field.location = colGR.getValue('u_location');
+		}
+		field.repeat = true;
+		if (colGR.isValidField('u_repeat_with_table')) {
+			field.repeat = colGR.getValue('u_repeat_with_table') == "1" ? true : false;
+		}
+		field.choiceOptions = [];
+		if (!colGR.u_choice_list.nil()) {
+			// execute the script
+			try {
+				var answer = [];
+				if (!colGR.u_choice_list.nil()) {
+					var globals = GlideStringUtil.decodeAttributes("answer");
+					globals.put("answer", answer);
+					answer = GlideEvaluator.evaluateStringWithGlobals(colGR.getValue("u_choice_list"), globals);
+				}
+				field.choiceOptions = answer;
+				field.choices = answer;
+				if (field.choices && field.choices.length) {
+					for (var c=0; c<field.choices.length; c++) {
+						field.choices[c].price = 0;
+						field.choices[c].priceLabel = "";
+						field.choices[c].recurring_price = 0;
+					}
+				}
+			} catch (chcEx) {
+			}
+		}
+		
+		field.onChangeFunc = '';
+		if (!colGR.u_on_change.nil()) {
+			field.onChangeScript = colGR.getValue('u_on_change');
+		}
+		
+		field.onclick = '';
+		if (!colGR.u_on_click.nil()) {
+			field.onclick = field.sys_id + '_' + 'onClick';
+			field.onClickScript = colGR.getValue('u_on_click');
+		}
+		
+		field.img = '';
+		if (colGR.u_icon.getDisplayValue() != '') {
+			field.img = '' + colGR.u_icon.getDisplayValue();
+		}
+		field.ed.name = field.variable_name;
+		field.ed.reference = field.refTable;
+		field.ed.qualifier = field.reference_qual;
+		if (JSUtil.notNil(field.ed.qualifier)) {
+			field.ed.queryString = field.ed.qualifier;
+		}
+		field.ed.defaultOperator = 'STARTSWITH';
+		field.reference_key = 'sys_id';
+		if (JSUtil.notNil(field.refTable)) {
+			var grRef = new GlideRecord(field.refTable);
+			if (grRef.isValid()) {
+				field.ed.searchField = grRef.getDisplayName();
+			}
+		}
+		return field;
+	}
+})();]]></script>
+<servicenow>false</servicenow>
+<sys_class_name>sp_widget</sys_class_name>
+<sys_created_by>admin</sys_created_by>
+<sys_created_on>2018-02-18 23:48:55</sys_created_on>
+<sys_customer_update>false</sys_customer_update>
+<sys_id>03bbdcf24f10130032617e918110c73a</sys_id>
+<sys_mod_count>260</sys_mod_count>
+<sys_name>Catalog Table Variable</sys_name>
+<sys_package display_value="Global" source="global">global</sys_package>
+<sys_policy/>
+<sys_replace_on_upgrade>false</sys_replace_on_upgrade>
+<sys_scope display_value="Global">global</sys_scope>
+<sys_update_name>sp_widget_03bbdcf24f10130032617e918110c73a</sys_update_name>
+<sys_updated_by>admin</sys_updated_by>
+<sys_updated_on>2018-03-20 01:49:49</sys_updated_on>
+<template><![CDATA[<div class="panel panel-default" ng-class="{'sc-cat-read-only':c.isReadOnly}">
+  <div class="panel-heading">
+    <h4>{{c.data.title}}</h4>
+  </div>
+  <div class="panel-body" style="padding: 5px;">
+    <div class="sc-cat-var" ng-repeat="tbl in c.tables">
+      <div ng-show="tbl.status.message != ''" class="alert alert-dismissible alert-{{tbl.status.state}}">
+        <button type="button" class="close" ng-click="tbl.status.message=''" aria-label="Close"><span aria-hidden="true">×</span></button>
+        {{tbl.status.message}}
+      </div>
+      <div class="well well-sm clearfix" ng-show="c.data.allowMulti">
+        <div class="pull-right">
+          <button ng-if="$index>0&&!c.isReadOnly" ng-click="c.removeTable($index)" style="margin-right:5px;" class="btn btn-default" type="button">Delete table</button>
+          <button ng-if="!c.isReadOnly && c.data.allowMulti" ng-click="c.addTable()" class="btn btn-default" type="button">Add table</button>
+        </div>
+        <h5><span ng-if="$index==0 && c.data.initialTableHeader">{{c.data.initialTableHeader}}</span>&nbsp;</h5>
+      </div>
+      <div ng-show="c.data.nonTableFields.length > 0" class="panel panel-default sc-cat-prefields">
+        <div class="panel-body">
+          <div ng-repeat="prefld in c.data.nonTableFields" ng-if="prefld.repeat && (prefld.show=='always' || prefld.show=='' || (prefld.show=='first' && $parent.$index==0) || (prefld.show=='not_first' && $parent.$index>0))" style="{{prefld.cellCSS}}">
+            <div ng-if="prefld.type=='button'">
+              <button ng-disabled="c.isReadOnly" type="button" ng-click="c.click(prefld, tbl.idx+'.'+rw.idx)" class="btn btn-default btn-field">
+                <span ng-if="prefld.img && prefld.img != ''" title="{{prefld.label}}">
+                  <img ng-src="prefld.img" />
+                </span>
+                <span ng-if="!prefld.img || prefld.img == ''">{{prefld.label}}</span>
+              </button>
+            </div>
+            <div ng-if="prefld.type!='button'">
+              <sp-form-field form-model="formModel" field="formModel._fields[prefld.name+'_'+tbl.idx]" glide-form="getGlideForm()" ng-show="true"></sp-form-field>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="table-responsive">
+        <table class="sc-var-table table table-bordered table-condensed" ng-class="{'action-button-left':c.data.buttonPosition=='left','action-button-right':c.data.buttonPosition=='right'}">
+          <thead>
+            <tr>
+              <th class="action-button">
+                <button class="btn btn-default" title="Clear Table" type="button" style="position: relative;" ng-click="c.clearTable(tbl);">
+                  <i class=" fa fa-trash"></i>
+                </button>
+                <button class="btn btn-default" ng-disabled="tbl.rows.length >= c.data.maxRows" title="Add Row" type="button" style="white-space: nowrap; position: relative; margin-right: 0px;" ng-click="c.addRow($index)">
+                  <i class=" fa fa-plus"></i>
+                </button>
+              </th>
+              <th ng-repeat="fld in c.data.fields" ng-if="fld.show=='always' || fld.show=='' || (fld.show=='first' && $parent.$index==0) || (fld.show=='not_first' && $parent.$index>0)" style="{{fld.labelCSS}}">
+                {{fld.label}}
+                <span ng-if="fld.mandatory" title="Mandatory - must be populated before Submit" class="fa fa-asterisk mandatory"></span>
+              </th>
+              <th class="action-button">
+                <button class="btn btn-default" title="Clear Table" type="button" style="position: relative;" ng-click="c.clearTable(tbl);">
+                  <i class=" fa fa-trash"></i>
+                </button>
+                <button class="btn btn-default" ng-disabled="tbl.rows.length >= c.data.maxRows" title="Add Row" type="button" style="white-space: nowrap; position: relative; margin-right: 0px;" ng-click="c.addRow($index)">
+                  <i class=" fa fa-plus"></i>
+                </button>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr ng-repeat="rw in tbl.rows">
+               <td class="item_action action-button">
+                 <button ng-click="c.removeRow(tbl, rw)" href="javascript: void(0);" title="Delete Row" class="btn btn-default">
+                   <i class="fa fa-times"></i>
+                 </button>
+                 <button ng-show="c.data.allowCopy" ng-disabled="tbl.rows.length>=c.data.maxRows" ng-click="c.copyRow(tbl, rw)" href="javascript: void(0);" title="Copy Row" class="btn btn-default">
+                   <i class="fa fa-copy"></i>
+                 </button>
+              </td>
+              <td ng-repeat="fld in c.data.fields" ng-if="fld.show=='always' || fld.show=='' || (fld.show=='first' && $parent.$parent.$index==0) || (fld.show=='not_first' && $parent.$parent.$index>0)" style="{{fld.cellCSS}}">
+                <div ng-if="fld.type=='button'">
+                  <button ng-disabled="c.isReadOnly" type="button" ng-click="c.click(fld, tbl.idx+'.'+rw.idx)" class="btn btn-default btn-field">
+                    <span ng-if="fld.img && fld.img != ''" title="{{fld.label}}">
+                      <img ng-src="fld.img" />
+                    </span>
+                    <span ng-if="!fld.img || fld.img == ''">{{fld.label}}</span>
+                  </button>
+                </div>
+                <div ng-if="fld.type!='button'">
+                  <sp-form-field form-model="formModel" field="formModel._fields[fld.name+'_'+tbl.idx+'_'+rw.idx]" glide-form="getGlideForm()" ng-show="true"></sp-form-field>
+                </div>
+              </td>
+              <td class="item_action action-button">
+                <button ng-click="c.removeRow(tbl, rw)" href="javascript: void(0);" title="Delete Row" class="btn btn-default">
+                  <i class="fa fa-times"></i>
+                </button>
+                <button ng-show="c.data.allowCopy" ng-disabled="tbl.rows.length>=c.data.maxRows" ng-click="c.copyRow(tbl, rw)" href="javascript: void(0);" title="Copy Row" class="btn btn-default">
+                  <i class="fa fa-copy"></i>
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div ng-show="tbl.status.message != ''" class="alert alert-dismissible alert-{{tbl.status.state}}">
+        <button type="button" class="close" ng-click="tbl.status.message=''" aria-label="Close"><span aria-hidden="true">×</span></button>
+        {{tbl.status.message}}
+      </div>
+    </div>
+  </div>
+</div>
+<script type="text/javascript" ng-bind="c.scripts"></script>]]></template>
+</sp_widget>
+<sys_ui_macro action="INSERT_OR_UPDATE">
+<active>true</active>
+<category>general</category>
+<description>Custom reference field used by Table variable.</description>
+<media_type/>
+<name>cs_custom_ui_reference</name>
+<scoped_name/>
+<sys_class_name>sys_ui_macro</sys_class_name>
+<sys_created_by>snc-services_SHARE</sys_created_by>
+<sys_created_on>2013-12-31 19:19:30</sys_created_on>
+<sys_customer_update>true</sys_customer_update>
+<sys_id>883e4fa48782910059fb552509434d34</sys_id>
+<sys_mod_count>11</sys_mod_count>
+<sys_name>cs_custom_ui_reference</sys_name>
+<sys_package display_value="Global" source="global">global</sys_package>
+<sys_policy/>
+<sys_replace_on_upgrade>false</sys_replace_on_upgrade>
+<sys_scope display_value="Global">global</sys_scope>
+<sys_update_name>sys_ui_macro_883e4fa48782910059fb552509434d34</sys_update_name>
+<sys_updated_by>admin</sys_updated_by>
+<sys_updated_on>2018-03-19 23:32:46</sys_updated_on>
+<xml><![CDATA[<?xml version="1.0" encoding="utf-8" ?>
+<j:jelly trim="true" xmlns:j="jelly:core" xmlns:g="glide">
+    <g:macro name="" table="" value="" displayvalue="" show_popup="true" show_lookup="true" completer="" columns="" order_by="" query="" onchange=""/>
+    <j:set var="jvar_question_name" value="${jvar_name}"/> 
+    <j:set var="jvar_question_reference" value="${jvar_table}"/> 
+    <j:set var="ref" value="${jvar_question_reference}"/> 
+    <j:set var="jvar_question_value" value="${jvar_value}"/> 
+    <j:set var="jvar_question_display" value="${jvar_displayvalue}"/>
+    <j:set var="jvar_lightweight_reference_class" value="questionsetreference form-control"/>
+    <j:if test="${!empty(jvar_query)}">
+        <j:set var="jvar_ref_filter" value="${jvar_query}"/>
+		<j:set var="jvar_question_reference_qual" value="QUERY:${jvar_query}"/>
+    </j:if>
+    <j:set var="jvar_show_lookup" value="${jvar_show_lookup}"/>
+    <j:set var="jvar_show_popup" value="${jvar_show_popup}"/>
+    <g:inline template="lightweight_reference.xml"/>
+</j:jelly>]]></xml>
+</sys_ui_macro>
+</unload>
